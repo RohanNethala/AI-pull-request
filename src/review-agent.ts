@@ -26,6 +26,7 @@ import {
   getInlineFixPrompt,
 } from "./prompts/inline-prompt";
 import { getGitFile } from "./reviews";
+import { getParserForExtension } from "./constants";
 
 export const reviewDiff = async (messages: ChatCompletionMessageParam[]) => {
   const message = await generateChatCompletion({
@@ -36,10 +37,10 @@ export const reviewDiff = async (messages: ChatCompletionMessageParam[]) => {
 
 export const reviewFiles = async (
   files: PRFile[],
-  patchBuilder: (file: PRFile) => string,
+  patchBuilder: (file: PRFile) => Promise<string>,
   convoBuilder: (diff: string) => ChatCompletionMessageParam[]
 ) => {
-  const patches = files.map((file) => patchBuilder(file));
+  const patches = await Promise.all(files.map(patchBuilder));
   const messages = convoBuilder(patches.join("\n"));
   const feedback = await reviewDiff(messages);
   return feedback;
@@ -101,22 +102,24 @@ const groupFilesByExtension = (files: PRFile[]): Map<string, PRFile[]> => {
 };
 
 // all of the files here can be processed with the prompt at minimum
-const processWithinLimitFiles = (
+const processWithinLimitFiles = async (
   files: PRFile[],
-  patchBuilder: (file: PRFile) => string,
+  patchBuilder: (file: PRFile) => Promise<string>,
   convoBuilder: (diff: string) => ChatCompletionMessageParam[]
 ) => {
   const processGroups: PRFile[][] = [];
+  const patches = await Promise.all(files.map(patchBuilder));
   const convoWithinModelLimit = isConversationWithinLimit(
-    constructPrompt(files, patchBuilder, convoBuilder)
+    await constructPrompt(files, (f) => Promise.resolve(patches[files.indexOf(f)]), convoBuilder)
   );
 
   console.log(`Within model token limits: ${convoWithinModelLimit}`);
   if (!convoWithinModelLimit) {
     const grouped = groupFilesByExtension(files);
     for (const [extension, filesForExt] of grouped.entries()) {
+      const extPatches = await Promise.all(filesForExt.map(patchBuilder));
       const extGroupWithinModelLimit = isConversationWithinLimit(
-        constructPrompt(filesForExt, patchBuilder, convoBuilder)
+        await constructPrompt(filesForExt, (f) => Promise.resolve(extPatches[filesForExt.indexOf(f)]), convoBuilder)
       );
       if (extGroupWithinModelLimit) {
         processGroups.push(filesForExt);
@@ -127,9 +130,10 @@ const processWithinLimitFiles = (
         );
         let currentGroup: PRFile[] = [];
         filesForExt.sort((a, b) => a.patchTokenLength - b.patchTokenLength);
-        filesForExt.forEach((file) => {
+        for (const file of filesForExt) {
+          const patch = await patchBuilder(file);
           const isPotentialGroupWithinLimit = isConversationWithinLimit(
-            constructPrompt([...currentGroup, file], patchBuilder, convoBuilder)
+            await constructPrompt([...currentGroup, file], (f) => Promise.resolve(f === file ? patch : patches[files.indexOf(f)]), convoBuilder)
           );
           if (isPotentialGroupWithinLimit) {
             currentGroup.push(file);
@@ -137,7 +141,7 @@ const processWithinLimitFiles = (
             processGroups.push(currentGroup);
             currentGroup = [file];
           }
-        });
+        }
         if (currentGroup.length > 0) {
           processGroups.push(currentGroup);
         }
@@ -159,9 +163,9 @@ const stripRemovedLines = (originalFile: PRFile) => {
   return { ...originalFile, patch: strippedPatch };
 };
 
-const processOutsideLimitFiles = (
+const processOutsideLimitFiles = async (
   files: PRFile[],
-  patchBuilder: (file: PRFile) => string,
+  patchBuilder: (file: PRFile) => Promise<string>,
   convoBuilder: (diff: string) => ChatCompletionMessageParam[]
 ) => {
   const processGroups: PRFile[][] = [];
@@ -170,16 +174,16 @@ const processOutsideLimitFiles = (
   }
   files = files.map((file) => stripRemovedLines(file));
   const convoWithinModelLimit = isConversationWithinLimit(
-    constructPrompt(files, patchBuilder, convoBuilder)
+    await constructPrompt(files, patchBuilder, convoBuilder)
   );
   if (convoWithinModelLimit) {
     processGroups.push(files);
   } else {
     const exceedingLimits: PRFile[] = [];
     const withinLimits: PRFile[] = [];
-    files.forEach((file) => {
+    files.forEach(async (file) => {
       const isFileConvoWithinLimits = isConversationWithinLimit(
-        constructPrompt([file], patchBuilder, convoBuilder)
+        await constructPrompt([file], patchBuilder, convoBuilder)
       );
       if (isFileConvoWithinLimits) {
         withinLimits.push(file);
@@ -187,7 +191,7 @@ const processOutsideLimitFiles = (
         exceedingLimits.push(file);
       }
     });
-    const withinLimitsGroup = processWithinLimitFiles(
+    const withinLimitsGroup = await processWithinLimitFiles(
       withinLimits,
       patchBuilder,
       convoBuilder
@@ -336,19 +340,20 @@ export const reviewChanges = async (
   convoBuilder: (diff: string) => ChatCompletionMessageParam[],
   responseBuilder: (responses: string[]) => Promise<BuilderResponse>
 ) => {
-  const patchBuilder = buildPatchPrompt;
+  const patchBuilder = async (file: PRFile) => await buildPatchPrompt(file);
   const filteredFiles = files.filter((file) => filterFile(file));
-  filteredFiles.map((file) => {
-    file.patchTokenLength = getTokenLength(patchBuilder(file));
-  });
+  await Promise.all(filteredFiles.map(async (file) => {
+    file.patchTokenLength = getTokenLength(await patchBuilder(file));
+  }));
   // further subdivide if necessary, maybe group files by common extension?
   const patchesWithinModelLimit: PRFile[] = [];
   // these single file patches are larger than the full model context
   const patchesOutsideModelLimit: PRFile[] = [];
 
-  filteredFiles.forEach((file) => {
+  filteredFiles.forEach(async (file) => {
+    const patch = await buildPatchPrompt(file);
     const patchWithPromptWithinLimit = isConversationWithinLimit(
-      constructPrompt([file], patchBuilder, convoBuilder)
+      await constructPrompt([file], () => Promise.resolve(patch), convoBuilder)
     );
     if (patchWithPromptWithinLimit) {
       patchesWithinModelLimit.push(file);
@@ -358,12 +363,12 @@ export const reviewChanges = async (
   });
 
   console.log(`files within limits: ${patchesWithinModelLimit.length}`);
-  const withinLimitsPatchGroups = processWithinLimitFiles(
+  const withinLimitsPatchGroups = await processWithinLimitFiles(
     patchesWithinModelLimit,
     patchBuilder,
     convoBuilder
   );
-  const exceedingLimitsPatchGroups = processOutsideLimitFiles(
+  const exceedingLimitsPatchGroups = await processOutsideLimitFiles(
     patchesOutsideModelLimit,
     patchBuilder,
     convoBuilder

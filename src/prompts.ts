@@ -119,12 +119,28 @@ export const buildSuggestionPrompt = (file: PRFile) => {
   return `## ${file.filename}\n\n${patchWithLines}`;
 };
 
-export const buildPatchPrompt = (file: PRFile) => {
-  if (file.old_contents == null) {
-    return rawPatchStrategy(file);
-  } else {
-    return smarterContextPatchStrategy(file);
+const patchCache = new Map<string, string>();
+
+export const buildPatchPrompt = async (file: PRFile) => {
+  const cacheKey = `${file.filename}-${file.sha}`;
+  
+  if (patchCache.has(cacheKey)) {
+    console.log(`📦 Using cached patch for ${file.filename}`);
+    return patchCache.get(cacheKey);
   }
+  
+  console.log(`🔍 buildPatchPrompt called for file: ${file.filename}`);
+  let result;
+  if (file.old_contents == null) {
+    console.log('⚠️ No old contents, using rawPatchStrategy');
+    result = rawPatchStrategy(file);
+  } else {
+    console.log('✨ Using smarterContextPatchStrategy');
+    result = await smarterContextPatchStrategy(file);
+  }
+  
+  patchCache.set(cacheKey, result);
+  return result;
 };
 
 export const getReviewPrompt = (diff: string): ChatCompletionMessageParam[] => {
@@ -143,12 +159,12 @@ export const getXMLReviewPrompt = (
   ];
 };
 
-export const constructPrompt = (
+export const constructPrompt = async (
   files: PRFile[],
-  patchBuilder: (file: PRFile) => string,
+  patchBuilder: (file: PRFile) => Promise<string>,
   convoBuilder: (diff: string) => ChatCompletionMessageParam[]
 ) => {
-  const patches = files.map((file) => patchBuilder(file));
+  const patches = await Promise.all(files.map(patchBuilder));
   const diff = patches.join("\n");
   const convo = convoBuilder(diff);
   return convo;

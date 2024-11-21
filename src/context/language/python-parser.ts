@@ -36,6 +36,7 @@ const processNode = (
 
 export class PythonParser implements AbstractParser {
   private async getParser(): Promise<Parser> {
+    console.log("🔍 Getting Python parser...");
     return await initializeParser();
   }
 
@@ -44,10 +45,16 @@ export class PythonParser implements AbstractParser {
     lineStart: number,
     lineEnd: number
   ): Promise<EnclosingContext> {
+    console.log("🚀 Starting Python parser findEnclosingContext");
+    console.log(`📄 File content length: ${file.length} characters`);
+    console.log(`🎯 Target lines: ${lineStart}-${lineEnd}`);
+
     const parser = await this.getParser();
     const tree = parser.parse(file);
     let largestEnclosingContext: Parser.SyntaxNode = null;
     let largestSize = 0;
+
+    console.log(`Searching for context between lines ${lineStart} and ${lineEnd}`);
 
     // Traverse the syntax tree to find function and class definitions
     const cursor = tree.walk();
@@ -59,6 +66,9 @@ export class PythonParser implements AbstractParser {
         node.type === 'function_definition' ||
         node.type === 'class_definition'
       ) {
+        console.log(`Found ${node.type} at lines ${node.startPosition.row}-${node.endPosition.row}`);
+        
+        const prevContext = largestEnclosingContext;
         ({ largestSize, largestEnclosingContext } = processNode(
           node,
           lineStart,
@@ -66,8 +76,22 @@ export class PythonParser implements AbstractParser {
           largestSize,
           largestEnclosingContext
         ));
+        
+        if (largestEnclosingContext !== prevContext) {
+          console.log(`New largest context found: ${node.type} with size ${largestSize}`);
+          console.log(`Context text: ${node.text.split('\n')[0]}...`); // Print first line of context
+        }
       }
     } while (cursor.gotoNextSibling() || cursor.gotoParent());
+
+    console.log('Final enclosing context:', 
+      largestEnclosingContext ? {
+        type: largestEnclosingContext.type,
+        start: largestEnclosingContext.startPosition.row,
+        end: largestEnclosingContext.endPosition.row,
+        text: largestEnclosingContext.text.split('\n')[0] + '...'
+      } : 'None found'
+    );
 
     return {
       enclosingContext: largestEnclosingContext,
@@ -75,6 +99,7 @@ export class PythonParser implements AbstractParser {
   }
 
   async dryRun(file: string): Promise<{ valid: boolean; error: string }> {
+    console.log("🧪 Starting Python parser dryRun");
     try {
       const parser = await this.getParser();
       const tree = parser.parse(file);
@@ -95,6 +120,7 @@ export class PythonParser implements AbstractParser {
         error: hasError ? "Syntax error in Python code" : "",
       };
     } catch (exc) {
+      console.error("❌ Python parser dryRun error:", exc);
       return {
         valid: false,
         error: exc.toString(),
