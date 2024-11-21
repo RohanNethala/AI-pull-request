@@ -98,8 +98,11 @@ export interface AbstractParser {
     file: string,
     lineStart: number,
     lineEnd: number
-  ): EnclosingContext;
-  dryRun(file: string): { valid: boolean; error: string };
+  ): Promise<EnclosingContext>;
+  
+  dryRun(
+    file: string
+  ): Promise<{ valid: boolean; error: string }>;
 }
 
 const EXTENSIONS_TO_PARSERS: Map<string, AbstractParser> = new Map([
