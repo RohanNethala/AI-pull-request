@@ -2,6 +2,7 @@ import { Node } from "@babel/traverse";
 import { JavascriptParser } from "./context/language/javascript-parser";
 import { ChatCompletionMessageParam } from "groq-sdk/resources/chat/completions";
 import { PythonParser } from "./context/language/python-parser";
+import { SyntaxNode } from "web-tree-sitter";
 
 export interface PRFile {
   sha: string;
@@ -91,7 +92,7 @@ export const processGitFilepath = (filepath: string) => {
 };
 
 export interface EnclosingContext {
-  enclosingContext: Node | null;
+  enclosingContext: Node | SyntaxNode | null;
 }
 
 export interface AbstractParser {

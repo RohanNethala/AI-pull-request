@@ -7,6 +7,7 @@ import {
 import * as diff from "diff";
 import { JavascriptParser } from "./language/javascript-parser";
 import { Node } from "@babel/traverse";
+import { SyntaxNode } from "web-tree-sitter";
 
 const expandHunk = (
   contents: string,
@@ -107,13 +108,20 @@ const trimHunk = (hunk: diff.Hunk): diff.Hunk => {
 
 const buildingScopeString = (
   currentFile: string,
-  scope: Node,
+  scope: Node | SyntaxNode,
   hunk: diff.Hunk
 ) => {
   const res: string[] = [];
   const trimmedHunk = trimHunk(hunk);
-  const functionStartLine = scope.loc.start.line;
-  const functionEndLine = scope.loc.end.line;
+  let functionStartLine: number;
+  let functionEndLine: number;
+  if (scope && typeof scope === 'object' && 'loc' in scope) {
+    functionStartLine = scope.loc.start.line;
+    functionEndLine = scope.loc.end.line;
+  } else if (scope && typeof scope === 'object' && 'startPosition' in scope && 'endPosition' in scope) {
+    functionStartLine = scope.startPosition.row;
+    functionEndLine = scope.endPosition.row;
+  }
   const updatedFileLines = currentFile.split("\n");
   // Extract the lines of the function
   const functionContext = updatedFileLines.slice(
@@ -193,7 +201,7 @@ const diffContextPerHunk = async (
   const updatedFile = file.current_contents;
   const patches: PatchInfo[] = diff.parsePatch(file.patch);
   const scopeRangeHunkMap = new Map<string, diff.Hunk[]>();
-  const scopeRangeNodeMap = new Map<string, Node>();
+  const scopeRangeNodeMap = new Map<string, Node | SyntaxNode>();
   const expandStrategy: diff.Hunk[] = [];
   const order: number[] = [];
 
@@ -206,7 +214,7 @@ const diffContextPerHunk = async (
       ).length;
       
       // Expand the search range significantly above and below the changed lines
-      const contextRange = 50; // Increase this number to look further
+      const contextRange = 0; // Increase this number to look further
       const lineStart = Math.max(1, trimmedHunk.newStart - contextRange);
       const lineEnd = trimmedHunk.newStart + insertions + contextRange;
       
@@ -220,7 +228,15 @@ const diffContextPerHunk = async (
       
       const largestEnclosingFunction = largest.enclosingContext;
 
-      if (largestEnclosingFunction) {
+      if (largestEnclosingFunction && typeof largestEnclosingFunction === 'object' && 'startPosition' in largestEnclosingFunction && 'endPosition' in largestEnclosingFunction) {
+        console.log(`✅ Found enclosing context: ${largestEnclosingFunction.type} at lines ${largestEnclosingFunction.startPosition.row}-${largestEnclosingFunction.endPosition.row}`);
+        const enclosingRangeKey = `${largestEnclosingFunction.startPosition.row} -> ${largestEnclosingFunction.endPosition.row}`;
+        let existingHunks = scopeRangeHunkMap.get(enclosingRangeKey) || [];
+        existingHunks.push(currentHunk);
+        scopeRangeHunkMap.set(enclosingRangeKey, existingHunks);
+        scopeRangeNodeMap.set(enclosingRangeKey, largestEnclosingFunction);
+      }
+      else if (largestEnclosingFunction && typeof largestEnclosingFunction === 'object' && 'loc' in largestEnclosingFunction) {
         console.log(`✅ Found enclosing context: ${largestEnclosingFunction.type} at lines ${largestEnclosingFunction.loc.start.line}-${largestEnclosingFunction.loc.end.line}`);
         const enclosingRangeKey = `${largestEnclosingFunction.loc.start.line} -> ${largestEnclosingFunction.loc.end.line}`;
         let existingHunks = scopeRangeHunkMap.get(enclosingRangeKey) || [];
@@ -250,7 +266,7 @@ const diffContextPerHunk = async (
   scopeStategy.forEach(([rangeKey, hunk]) => {
     const context = buildingScopeString(
       updatedFile,
-      scopeRangeNodeMap.get(rangeKey),
+      scopeRangeNodeMap.get(rangeKey) as Node | SyntaxNode,
       hunk
     ).join("\n");
     contexts.push(context);

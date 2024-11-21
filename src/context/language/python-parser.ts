@@ -14,26 +14,6 @@ async function initializeParser() {
   return parser;
 }
 
-const processNode = (
-  node: Parser.SyntaxNode,
-  lineStart: number,
-  lineEnd: number,
-  largestSize: number,
-  largestEnclosingContext: Parser.SyntaxNode | null
-) => {
-  const startPosition = node.startPosition;
-  const endPosition = node.endPosition;
-  
-  if (startPosition.row <= lineStart && lineEnd <= endPosition.row) {
-    const size = endPosition.row - startPosition.row;
-    if (size > largestSize) {
-      largestSize = size;
-      largestEnclosingContext = node;
-    }
-  }
-  return { largestSize, largestEnclosingContext };
-};
-
 export class PythonParser implements AbstractParser {
   private async getParser(): Promise<Parser> {
     console.log("🔍 Getting Python parser...");
@@ -45,57 +25,91 @@ export class PythonParser implements AbstractParser {
     lineStart: number,
     lineEnd: number
   ): Promise<EnclosingContext> {
-    console.log("🚀 Starting Python parser findEnclosingContext");
-    console.log(`📄 File content length: ${file.length} characters`);
-    console.log(`🎯 Target lines: ${lineStart}-${lineEnd}`);
-
+    console.log(`🔍 Searching for context for range: ${lineStart} - ${lineEnd}`);
+    
     const parser = await this.getParser();
     const tree = parser.parse(file);
-    let largestEnclosingContext: Parser.SyntaxNode = null;
-    let largestSize = 0;
 
-    console.log(`Searching for context between lines ${lineStart} and ${lineEnd}`);
+    // Separate tracking for different types of contexts
+    const contextNodes: { definitions: Parser.SyntaxNode[]; blocks: Parser.SyntaxNode[] } = {
+      definitions: [], // function_definition, class_definition
+      blocks: []      // if_statement, with_statement, block, etc
+    };
 
-    // Traverse the syntax tree to find function and class definitions
-    const cursor = tree.walk();
-    do {
-      const node = cursor.currentNode;
-      
-      // Check for function definitions and class definitions
-      if (
-        node.type === 'function_definition' ||
-        node.type === 'class_definition'
-      ) {
-        console.log(`Found ${node.type} at lines ${node.startPosition.row}-${node.endPosition.row}`);
-        
-        const prevContext = largestEnclosingContext;
-        ({ largestSize, largestEnclosingContext } = processNode(
-          node,
-          lineStart,
-          lineEnd,
-          largestSize,
-          largestEnclosingContext
-        ));
-        
-        if (largestEnclosingContext !== prevContext) {
-          console.log(`New largest context found: ${node.type} with size ${largestSize}`);
-          console.log(`Context text: ${node.text.split('\n')[0]}...`); // Print first line of context
+    // Helper to check if a node contains our target range
+    const nodeContainsRange = (node: Parser.SyntaxNode) => {
+      if (node.endPosition.row - node.startPosition.row < 1) {
+        return false;
+      }
+
+      return node.startPosition.row <= lineStart && 
+             node.endPosition.row >= lineEnd &&
+             node.text.trim().length > 0;
+    };
+
+    // Recursive function with context type separation
+    const traverseTree = (node: Parser.SyntaxNode) => {
+      if (node.endPosition.row - node.startPosition.row < 1) {
+        return;
+      }
+
+      if (nodeContainsRange(node)) {
+        const nodeType = node.type;
+        const nameNode = node.childForFieldName('name');
+        const name = nameNode ? nameNode.text : 'unnamed';
+
+        if (['function_definition', 'class_definition'].includes(nodeType)) {
+          console.log(`Found definition context ${nodeType}: ${name} at lines ${node.startPosition.row}-${node.endPosition.row}`);
+          contextNodes.definitions.push(node);
+        } else if (['if_statement', 'with_statement', 'block', 'while_statement', 'for_statement', 'try_statement'].includes(nodeType)) {
+          console.log(`Found block context ${nodeType} at lines ${node.startPosition.row}-${node.endPosition.row}`);
+          contextNodes.blocks.push(node);
         }
       }
-    } while (cursor.gotoNextSibling() || cursor.gotoParent());
 
-    console.log('Final enclosing context:', 
-      largestEnclosingContext ? {
-        type: largestEnclosingContext.type,
-        start: largestEnclosingContext.startPosition.row,
-        end: largestEnclosingContext.endPosition.row,
-        text: largestEnclosingContext.text.split('\n')[0] + '...'
-      } : 'None found'
-    );
+      // Only traverse children if the node might contain our range
+      if (node.startPosition.row <= lineEnd && node.endPosition.row >= lineStart) {
+        for (let i = 0; i < node.childCount; i++) {
+          const child = node.child(i);
+          if (child) {
+            traverseTree(child);
+          }
+        }
+      }
+    };
+
+    traverseTree(tree.rootNode);
+
+    // Find the smallest containing node, prioritizing definitions
+    let bestNode = null;
+    
+    // First try to find the smallest definition
+    if (contextNodes.definitions.length > 0) {
+      bestNode = contextNodes.definitions.reduce((smallest, current) => {
+        const smallestSize = smallest.endPosition.row - smallest.startPosition.row;
+        const currentSize = current.endPosition.row - current.startPosition.row;
+        return currentSize < smallestSize ? current : smallest;
+      });
+      console.log(`Selected definition context: ${bestNode.type} at lines ${bestNode.startPosition.row}-${bestNode.endPosition.row}`);
+    }
+    
+    // If no definitions found, try blocks
+    if (!bestNode && contextNodes.blocks.length > 0) {
+      bestNode = contextNodes.blocks.reduce((smallest, current) => {
+        const smallestSize = smallest.endPosition.row - smallest.startPosition.row;
+        const currentSize = current.endPosition.row - current.startPosition.row;
+        return currentSize < smallestSize ? current : smallest;
+      });
+      console.log(`Selected block context: ${bestNode.type} at lines ${bestNode.startPosition.row}-${bestNode.endPosition.row}`);
+    }
+
+    if (!bestNode) {
+      console.log('No suitable context found');
+    }
 
     return {
-      enclosingContext: largestEnclosingContext,
-    } as EnclosingContext;
+      enclosingContext: bestNode
+    };
   }
 
   async dryRun(file: string): Promise<{ valid: boolean; error: string }> {
