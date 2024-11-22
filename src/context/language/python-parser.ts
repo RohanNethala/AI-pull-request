@@ -95,10 +95,10 @@ export class PythonParser implements AbstractParser {
     
     // If no definitions found, try blocks
     if (!bestNode && contextNodes.blocks.length > 0) {
-      bestNode = contextNodes.blocks.reduce((smallest, current) => {
-        const smallestSize = smallest.endPosition.row - smallest.startPosition.row;
+      bestNode = contextNodes.blocks.reduce((largest, current) => {
+        const largestSize = largest.endPosition.row - largest.startPosition.row;
         const currentSize = current.endPosition.row - current.startPosition.row;
-        return currentSize < smallestSize ? current : smallest;
+        return currentSize > largestSize ? current : largest;
       });
       console.log(`Selected block context: ${bestNode.type} at lines ${bestNode.startPosition.row}-${bestNode.endPosition.row}`);
     }
