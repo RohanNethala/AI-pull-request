@@ -67,29 +67,3 @@ async function handlePullRequestOpened({
     console.log(exc);
   }
 }
-
-// This sets up a webhook event listener. When your app receives a webhook event from GitHub with a `X-GitHub-Event` header value of `pull_request` and an `action` payload value of `opened`, it calls the `handlePullRequestOpened` event handler that is defined above.
-//@ts-ignore
-reviewApp.webhooks.on("pull_request.opened", handlePullRequestOpened);
-
-const port = process.env.PORT || 3000;
-const reviewWebhook = `/api/review`;
-
-const reviewMiddleware = createNodeMiddleware(reviewApp.webhooks, {
-  path: "/api/review",
-});
-
-const server = http.createServer((req, res) => {
-  if (req.url === reviewWebhook) {
-    reviewMiddleware(req, res);
-  } else {
-    res.statusCode = 404;
-    res.end();
-  }
-});
-
-// This creates a Node.js server that listens for incoming HTTP requests (including webhook payloads from GitHub) on the specified port. When the server receives a request, it executes the `middleware` function that you defined earlier. Once the server is running, it logs messages to the console to indicate that it is listening.
-server.listen(port, () => {
-  console.log(`Server is listening for events.`);
-  console.log("Press Ctrl + C to quit.");
-});
