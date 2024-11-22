@@ -40,8 +40,25 @@ export const reviewFiles = async (
   patchBuilder: (file: PRFile) => Promise<string>,
   convoBuilder: (diff: string) => ChatCompletionMessageParam[]
 ) => {
-  const patches = await Promise.all(files.map(patchBuilder));
-  const messages = convoBuilder(patches.join("\n"));
+  console.log("Processing files:", files.map(f => f.filename));
+  
+  const patches = await Promise.all(files.map(async (file) => {
+    const patch = await patchBuilder(file);
+    console.log(`Patch for ${file.filename}:`, patch || 'EMPTY');
+    if (!patch) {
+      console.warn(`Empty patch generated for file: ${file.filename}`);
+    }
+    return patch;
+  }));
+
+  const validPatches = patches.filter(Boolean);
+  if (validPatches.length === 0) {
+    console.error("No valid patches generated");
+    return "No changes to review";
+  }
+
+  console.log("Valid patches count:", validPatches.length);
+  const messages = convoBuilder(validPatches.join("\n"));
   const feedback = await reviewDiff(messages);
   return feedback;
 };
@@ -340,26 +357,61 @@ export const reviewChanges = async (
   convoBuilder: (diff: string) => ChatCompletionMessageParam[],
   responseBuilder: (responses: string[]) => Promise<BuilderResponse>
 ) => {
+  console.log("Starting reviewChanges -----------------------------------------");
   const patchBuilder = async (file: PRFile) => await buildPatchPrompt(file);
+
+  console.log("Initial files:", {
+    count: files.length,
+    files: files.map(f => ({
+      filename: f.filename,
+      status: f.status,
+      hasPath: !!f.patch
+    }))
+  });
+
   const filteredFiles = files.filter((file) => filterFile(file));
+  console.log("After filtering:", {
+    originalCount: files.length,
+    filteredCount: filteredFiles.length,
+    filtered: filteredFiles.map(f => f.filename)
+  });
+
+  // Log before token length calculation
+  console.log("Starting token length calculation for files:", 
+    filteredFiles.map(f => f.filename)
+  );
+
   await Promise.all(filteredFiles.map(async (file) => {
-    file.patchTokenLength = getTokenLength(await patchBuilder(file));
+    const patch = await patchBuilder(file);
+    file.patchTokenLength = getTokenLength(patch);
+    console.log(`Token length for ${file.filename}: ${file.patchTokenLength}`);
   }));
-  // further subdivide if necessary, maybe group files by common extension?
+
+  // Log before model limit separation
+  console.log("Starting model limit separation");
+
   const patchesWithinModelLimit: PRFile[] = [];
-  // these single file patches are larger than the full model context
   const patchesOutsideModelLimit: PRFile[] = [];
 
-  filteredFiles.forEach(async (file) => {
+  // Change forEach to for...of for proper async handling
+  for (const file of filteredFiles) {
     const patch = await buildPatchPrompt(file);
     const patchWithPromptWithinLimit = isConversationWithinLimit(
       await constructPrompt([file], () => Promise.resolve(patch), convoBuilder)
     );
+    
+    console.log(`File ${file.filename} within limit: ${patchWithPromptWithinLimit}`);
+    
     if (patchWithPromptWithinLimit) {
       patchesWithinModelLimit.push(file);
     } else {
       patchesOutsideModelLimit.push(file);
     }
+  }
+
+  console.log("Final separation results:", {
+    withinLimit: patchesWithinModelLimit.length,
+    outsideLimit: patchesOutsideModelLimit.length
   });
 
   console.log(`files within limits: ${patchesWithinModelLimit.length}`);
@@ -377,7 +429,7 @@ export const reviewChanges = async (
   console.log(
     `${patchesOutsideModelLimit.length} files outside limit, skipping them.`
   );
-
+  
   const groups = [...withinLimitsPatchGroups, ...exceedingLimitsPatchGroups];
 
   const feedbacks = await Promise.all(
