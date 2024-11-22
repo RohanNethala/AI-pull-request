@@ -119,16 +119,7 @@ export const buildSuggestionPrompt = (file: PRFile) => {
   return `## ${file.filename}\n\n${patchWithLines}`;
 };
 
-const patchCache = new Map<string, string>();
-
 export const buildPatchPrompt = async (file: PRFile) => {
-  const cacheKey = `${file.filename}-${file.sha}`;
-  
-  if (patchCache.has(cacheKey)) {
-    console.log(`📦 Using cached patch for ${file.filename}`);
-    return patchCache.get(cacheKey);
-  }
-  
   console.log(`🔍 buildPatchPrompt called for file: ${file.filename}`);
   let result;
   if (file.old_contents == null) {
@@ -139,7 +130,6 @@ export const buildPatchPrompt = async (file: PRFile) => {
     result = await smarterContextPatchStrategy(file);
   }
   
-  patchCache.set(cacheKey, result);
   return result;
 };
 
