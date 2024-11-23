@@ -8,14 +8,6 @@ import { env } from "./env";
 import { processPullRequest } from "./review-agent";
 import { applyReview } from "./reviews";
 
-// This creates a new instance of the Octokit App class.
-const reviewApp = new App({
-  appId: env.GITHUB_APP_ID,
-  privateKey: env.GITHUB_PRIVATE_KEY,
-  webhooks: {
-    secret: env.GITHUB_WEBHOOK_SECRET,
-  },
-});
 
 const getChangesPerFile = async (payload: WebhookEventMap["pull_request"]) => {
   try {
